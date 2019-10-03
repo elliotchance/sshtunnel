@@ -69,9 +69,9 @@ func (tunnel *SSHTunnel) forward(localConn net.Conn) {
 	go copyConn(remoteConn, localConn)
 }
 
-func NewSSHTunnel(tunnel string, auth ssh.AuthMethod, destination string) *SSHTunnel {
+func NewSSHTunnel(tunnel string, auth ssh.AuthMethod, destination string, localPort string) *SSHTunnel {
 	// A random port will be chosen for us.
-	localEndpoint := NewEndpoint("localhost:0")
+	localEndpoint := NewEndpoint("localhost:" + localPort)
 
 	server := NewEndpoint(tunnel)
 	if server.Port == 0 {
