@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strconv"
 )
 
 type SSHTunnel struct {
@@ -42,36 +43,71 @@ func (tunnel *SSHTunnel) Start() error {
 }
 
 func (tunnel *SSHTunnel) forward(localConn net.Conn) {
-	serverConn, err := ssh.Dial("tcp", tunnel.Server.String(), tunnel.Config)
-	if err != nil {
-		tunnel.logf("server dial error: %s", err)
-		return
+	var serverConn *ssh.Client
+	var serverErr interface{}
+
+	var retry int
+	for {
+
+		retry ++
+		serverConn, serverErr = ssh.Dial("tcp", tunnel.Server.String(), tunnel.Config)
+		if serverErr != nil {
+			tunnel.logf("server dial error: %s", serverErr)
+		} else {
+			break
+		}
+	}
+
+	if retry > 1 {
+		tunnel.logf("Retry server: %s", strconv.Itoa(retry))
 	}
 
 	tunnel.logf("connected to %s (1 of 2)\n", tunnel.Server.String())
 
-	remoteConn, err := serverConn.Dial("tcp", tunnel.Remote.String())
-	if err != nil {
-		tunnel.logf("remote dial error: %s", err)
-		return
+	var remoteConn net.Conn
+	var remoteError interface{}
+	retry = 0
+
+	for {
+		retry ++
+		remoteConn, remoteError = serverConn.Dial("tcp", tunnel.Remote.String())
+		if remoteError != nil {
+			tunnel.logf("remote dial error: %s", remoteError)
+		}else{
+
+			break
+		}
+	}
+			
+	if retry > 1 {
+		tunnel.logf("Retry remote: %s", strconv.Itoa(retry))
 	}
 
 	tunnel.logf("connected to %s (2 of 2)\n", tunnel.Remote.String())
 
-	copyConn := func(writer, reader net.Conn) {
+	go func(writer, reader net.Conn) {
+		defer writer.Close()
+		defer reader.Close()
 		_, err := io.Copy(writer, reader)
 		if err != nil {
-			tunnel.logf("io.Copy error: %s", err)
+			tunnel.logf("io.Copy local to remote warm: %s", err)
 		}
-	}
+	}(localConn, remoteConn)
 
-	go copyConn(localConn, remoteConn)
-	go copyConn(remoteConn, localConn)
+	go func(writer, reader net.Conn) {
+		defer writer.Close()
+		defer reader.Close()
+		_, err := io.Copy(writer, reader)
+		if err != nil {
+			tunnel.logf("io.Copy remote to local warm: %s", err)
+		}
+	}(remoteConn, localConn)
+
 }
 
-func NewSSHTunnel(tunnel string, auth ssh.AuthMethod, destination string) *SSHTunnel {
+func NewSSHTunnel(tunnel string, auth ssh.AuthMethod, destination string, localPort string) *SSHTunnel {
 	// A random port will be chosen for us.
-	localEndpoint := NewEndpoint("localhost:0")
+	localEndpoint := NewEndpoint("localhost:" + localPort)
 
 	server := NewEndpoint(tunnel)
 	if server.Port == 0 {
@@ -94,3 +130,4 @@ func NewSSHTunnel(tunnel string, auth ssh.AuthMethod, destination string) *SSHTu
 
 	return sshTunnel
 }
+
