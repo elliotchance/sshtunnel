@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"sync"
 )
 
 type SSHTunnel struct {
@@ -13,6 +14,7 @@ type SSHTunnel struct {
 	Remote *Endpoint
 	Config *ssh.ClientConfig
 	Log    *log.Logger
+	close  chan interface{}
 }
 
 func (tunnel *SSHTunnel) logf(fmt string, args ...interface{}) {
@@ -26,47 +28,59 @@ func (tunnel *SSHTunnel) Start() error {
 	if err != nil {
 		return err
 	}
-	defer listener.Close()
-
 	tunnel.Local.Port = listener.Addr().(*net.TCPAddr).Port
-
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			return err
 		}
-
 		tunnel.logf("accepted connection")
-		go tunnel.forward(conn)
+		var wg sync.WaitGroup
+		go tunnel.forward(conn, &wg)
+		wg.Wait()
+		tunnel.logf("tunnel closed")
+		break
 	}
+	err = listener.Close()
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
-func (tunnel *SSHTunnel) forward(localConn net.Conn) {
+func (tunnel *SSHTunnel) forward(localConn net.Conn, wg *sync.WaitGroup) {
 	serverConn, err := ssh.Dial("tcp", tunnel.Server.String(), tunnel.Config)
 	if err != nil {
 		tunnel.logf("server dial error: %s", err)
 		return
 	}
-
 	tunnel.logf("connected to %s (1 of 2)\n", tunnel.Server.String())
-
 	remoteConn, err := serverConn.Dial("tcp", tunnel.Remote.String())
 	if err != nil {
 		tunnel.logf("remote dial error: %s", err)
 		return
 	}
-
 	tunnel.logf("connected to %s (2 of 2)\n", tunnel.Remote.String())
-
 	copyConn := func(writer, reader net.Conn) {
 		_, err := io.Copy(writer, reader)
 		if err != nil {
 			tunnel.logf("io.Copy error: %s", err)
 		}
 	}
-
 	go copyConn(localConn, remoteConn)
 	go copyConn(remoteConn, localConn)
+	<-tunnel.close
+	tunnel.logf("close signal received, closing...")
+	_ = localConn.Close()
+	_ = serverConn.Close()
+	_ = remoteConn.Close()
+	wg.Done()
+	return
+}
+
+func (tunnel *SSHTunnel) Close() {
+	tunnel.close <- struct{}{}
+	return
 }
 
 func NewSSHTunnel(tunnel string, auth ssh.AuthMethod, destination string) *SSHTunnel {
@@ -90,6 +104,7 @@ func NewSSHTunnel(tunnel string, auth ssh.AuthMethod, destination string) *SSHTu
 		Local:  localEndpoint,
 		Server: server,
 		Remote: NewEndpoint(destination),
+		close:  make(chan interface{}),
 	}
 
 	return sshTunnel
