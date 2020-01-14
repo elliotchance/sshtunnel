@@ -83,9 +83,13 @@ func (tunnel *SSHTunnel) Close() {
 	return
 }
 
-func NewSSHTunnel(tunnel string, auth ssh.AuthMethod, destination string) *SSHTunnel {
+func NewSSHTunnel(tunnel string, auth ssh.AuthMethod, destination string, localport ...string) *SSHTunnel {
 	// A random port will be chosen for us.
 	localEndpoint := NewEndpoint("localhost:0")
+
+	if len(localport) == 1 {
+		localEndpoint = NewEndpoint("localhost:" + localport[0])
+	}
 
 	server := NewEndpoint(tunnel)
 	if server.Port == 0 {
