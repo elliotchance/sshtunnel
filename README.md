@@ -29,6 +29,10 @@ tunnel := sshtunnel.NewSSHTunnel(
 
    // The destination host and port of the actual server.
    "dqrsdfdssdfx.us-east-1.redshift.amazonaws.com:5439",
+   
+   // The local port you want to bind the remote port to.
+   // Specifying "0" will lead to a random port.
+   "8443",
 )
 
 // You can provide a logger for debugging, or remove this line to
