@@ -2,18 +2,21 @@ package sshtunnel
 
 import (
 	"io"
-	"log"
 	"net"
 
 	"golang.org/x/crypto/ssh"
 )
+
+type logger interface {
+	Printf(string, ...interface{})
+}
 
 type SSHTunnel struct {
 	Local    *Endpoint
 	Server   *Endpoint
 	Remote   *Endpoint
 	Config   *ssh.ClientConfig
-	Log      *log.Logger
+	Log      logger
 	Conns    []net.Conn
 	SvrConns []*ssh.Client
 	isOpen   bool
