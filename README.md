@@ -26,6 +26,7 @@ tunnel := sshtunnel.NewSSHTunnel(
    // Pick ONE of the following authentication methods:
    sshtunnel.PrivateKeyFile("path/to/private/key.pem"), // 1. private key
    ssh.Password("password"),                            // 2. password
+   sshtunnel.SSHAgent(),                                // 3. ssh-agent
 
    // The destination host and port of the actual server.
    "dqrsdfdssdfx.us-east-1.redshift.amazonaws.com:5439",
