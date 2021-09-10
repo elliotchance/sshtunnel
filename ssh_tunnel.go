@@ -96,13 +96,14 @@ func (tunnel *SSHTunnel) forward(localConn net.Conn) {
 		return
 	}
 	tunnel.logf("connected to %s (1 of 2)\n", tunnel.Server.String())
+	tunnel.SvrConns = append(tunnel.SvrConns, serverConn)
+	
 	remoteConn, err := serverConn.Dial("tcp", tunnel.Remote.String())
 	if err != nil {
 		tunnel.logf("remote dial error: %s", err)
 		return
 	}
 	tunnel.Conns = append(tunnel.Conns, remoteConn)
-	tunnel.SvrConns = append(tunnel.SvrConns, serverConn)
 	tunnel.logf("connected to %s (2 of 2)\n", tunnel.Remote.String())
 	copyConn := func(writer, reader net.Conn) {
 		_, err := io.Copy(writer, reader)
