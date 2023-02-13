@@ -12,18 +12,17 @@ type logger interface {
 }
 
 type SSHTunnel struct {
-	Local    *Endpoint
-	Server   *Endpoint
-	Remote   *Endpoint
-	Config   *ssh.ClientConfig
-	Log      logger
-	Conns    []net.Conn
-	SvrConns []*ssh.Client
-	isOpen   bool
-	close    chan interface{}
+	Local                 *Endpoint
+	Server                *Endpoint
+	Remote                *Endpoint
+	Config                *ssh.ClientConfig
+	Log                   logger
+	Conns                 []net.Conn
+	SvrConns              []*ssh.Client
+	MaxConnectionAttempts int
+	isOpen                bool
+	close                 chan interface{}
 }
-
-const MAX_CONNECTION_ATTEMPTS int = 10
 
 func (tunnel *SSHTunnel) logf(fmt string, args ...interface{}) {
 	if tunnel.Log != nil {
@@ -95,8 +94,14 @@ func (tunnel *SSHTunnel) forward(localConn net.Conn) {
 	var (
 		serverConn   *ssh.Client
 		err          error
-		attemptsLeft int = MAX_CONNECTION_ATTEMPTS
+		attemptsLeft int
 	)
+
+	if tunnel.MaxConnectionAttempts == 0 {
+		attemptsLeft = 1
+	} else {
+		attemptsLeft = tunnel.MaxConnectionAttempts
+	}
 
 	for {
 		serverConn, err = ssh.Dial("tcp", tunnel.Server.String(), tunnel.Config)
