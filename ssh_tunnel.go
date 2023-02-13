@@ -23,6 +23,8 @@ type SSHTunnel struct {
 	close    chan interface{}
 }
 
+const MAX_CONNECTION_ATTEMPTS int = 10
+
 func (tunnel *SSHTunnel) logf(fmt string, args ...interface{}) {
 	if tunnel.Log != nil {
 		tunnel.Log.Printf(fmt, args...)
@@ -90,14 +92,29 @@ func (tunnel *SSHTunnel) Start() error {
 }
 
 func (tunnel *SSHTunnel) forward(localConn net.Conn) {
-	serverConn, err := ssh.Dial("tcp", tunnel.Server.String(), tunnel.Config)
-	if err != nil {
-		tunnel.logf("server dial error: %s", err)
-		return
+	var (
+		serverConn   *ssh.Client
+		err          error
+		attemptsLeft int = MAX_CONNECTION_ATTEMPTS
+	)
+
+	for {
+		serverConn, err = ssh.Dial("tcp", tunnel.Server.String(), tunnel.Config)
+		if err != nil {
+			attemptsLeft--
+
+			if attemptsLeft == 0 {
+				tunnel.logf("server dial error: %+v, [%d]", err, attemptsLeft)
+				return
+			}
+		} else {
+			break
+		}
 	}
+
 	tunnel.logf("connected to %s (1 of 2)\n", tunnel.Server.String())
 	tunnel.SvrConns = append(tunnel.SvrConns, serverConn)
-	
+
 	remoteConn, err := serverConn.Dial("tcp", tunnel.Remote.String())
 	if err != nil {
 		tunnel.logf("remote dial error: %s", err)
