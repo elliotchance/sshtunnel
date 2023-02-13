@@ -94,22 +94,16 @@ func (tunnel *SSHTunnel) forward(localConn net.Conn) {
 	var (
 		serverConn   *ssh.Client
 		err          error
-		attemptsLeft int
+		attemptsLeft int = tunnel.MaxConnectionAttempts
 	)
-
-	if tunnel.MaxConnectionAttempts == 0 {
-		attemptsLeft = 1
-	} else {
-		attemptsLeft = tunnel.MaxConnectionAttempts
-	}
 
 	for {
 		serverConn, err = ssh.Dial("tcp", tunnel.Server.String(), tunnel.Config)
 		if err != nil {
 			attemptsLeft--
 
-			if attemptsLeft == 0 {
-				tunnel.logf("server dial error: %+v, [%d]", err, attemptsLeft)
+			if attemptsLeft <= 0 {
+				tunnel.logf("server dial error: %w: exceeded %d attempts", err, tunnel.MaxConnectionAttempts)
 				return
 			}
 		} else {
