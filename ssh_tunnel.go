@@ -12,15 +12,16 @@ type logger interface {
 }
 
 type SSHTunnel struct {
-	Local    *Endpoint
-	Server   *Endpoint
-	Remote   *Endpoint
-	Config   *ssh.ClientConfig
-	Log      logger
-	Conns    []net.Conn
-	SvrConns []*ssh.Client
-	isOpen   bool
-	close    chan interface{}
+	Local                 *Endpoint
+	Server                *Endpoint
+	Remote                *Endpoint
+	Config                *ssh.ClientConfig
+	Log                   logger
+	Conns                 []net.Conn
+	SvrConns              []*ssh.Client
+	MaxConnectionAttempts int
+	isOpen                bool
+	close                 chan interface{}
 }
 
 func (tunnel *SSHTunnel) logf(fmt string, args ...interface{}) {
@@ -44,6 +45,14 @@ func (tunnel *SSHTunnel) Start() error {
 	}
 	tunnel.isOpen = true
 	tunnel.Local.Port = listener.Addr().(*net.TCPAddr).Port
+
+	// Ensure that MaxConnectionAttempts is at least 1. This check is done here
+	// since the library user can set the value at any point before Start() is called,
+	// and this check protects against the case where the programmer set MaxConnectionAttempts
+	// to 0 for some reason.
+	if tunnel.MaxConnectionAttempts <= 0 {
+		tunnel.MaxConnectionAttempts = 1
+	}
 
 	for {
 		if !tunnel.isOpen {
@@ -90,14 +99,29 @@ func (tunnel *SSHTunnel) Start() error {
 }
 
 func (tunnel *SSHTunnel) forward(localConn net.Conn) {
-	serverConn, err := ssh.Dial("tcp", tunnel.Server.String(), tunnel.Config)
-	if err != nil {
-		tunnel.logf("server dial error: %s", err)
-		return
+	var (
+		serverConn   *ssh.Client
+		err          error
+		attemptsLeft int = tunnel.MaxConnectionAttempts
+	)
+
+	for {
+		serverConn, err = ssh.Dial("tcp", tunnel.Server.String(), tunnel.Config)
+		if err != nil {
+			attemptsLeft--
+
+			if attemptsLeft <= 0 {
+				tunnel.logf("server dial error: %v: exceeded %d attempts", err, tunnel.MaxConnectionAttempts)
+				return
+			}
+		} else {
+			break
+		}
 	}
+
 	tunnel.logf("connected to %s (1 of 2)\n", tunnel.Server.String())
 	tunnel.SvrConns = append(tunnel.SvrConns, serverConn)
-	
+
 	remoteConn, err := serverConn.Dial("tcp", tunnel.Remote.String())
 	if err != nil {
 		tunnel.logf("remote dial error: %s", err)
