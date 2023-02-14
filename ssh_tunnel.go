@@ -46,6 +46,14 @@ func (tunnel *SSHTunnel) Start() error {
 	tunnel.isOpen = true
 	tunnel.Local.Port = listener.Addr().(*net.TCPAddr).Port
 
+	// Ensure that MaxConnectionAttempts is at least 1. This check is done here
+	// since the library user can set the value at any point before Start() is called,
+	// and this check protects against the case where the programmer set MaxConnectionAttempts
+	// to 0 for some reason.
+	if tunnel.MaxConnectionAttempts <= 0 {
+		tunnel.MaxConnectionAttempts = 1
+	}
+
 	for {
 		if !tunnel.isOpen {
 			break
@@ -103,7 +111,7 @@ func (tunnel *SSHTunnel) forward(localConn net.Conn) {
 			attemptsLeft--
 
 			if attemptsLeft <= 0 {
-				tunnel.logf("server dial error: %w: exceeded %d attempts", err, tunnel.MaxConnectionAttempts)
+				tunnel.logf("server dial error: %v: exceeded %d attempts", err, tunnel.MaxConnectionAttempts)
 				return
 			}
 		} else {
