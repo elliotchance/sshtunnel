@@ -2,6 +2,7 @@ package sshtunnel
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 )
@@ -22,9 +23,10 @@ func NewEndpoint(s string) *Endpoint {
 		endpoint.Host = parts[1]
 	}
 
-	if parts := strings.Split(endpoint.Host, ":"); len(parts) > 1 {
-		endpoint.Host = parts[0]
-		endpoint.Port, _ = strconv.Atoi(parts[1])
+	host, port, err := net.SplitHostPort(endpoint.Host)
+	if err == nil {
+		endpoint.Host = host
+		endpoint.Port, _ = strconv.Atoi(port)
 	}
 
 	return endpoint
