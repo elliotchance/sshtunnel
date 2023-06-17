@@ -13,7 +13,11 @@ type Endpoint struct {
 	User string
 }
 
-func NewEndpoint(s string) *Endpoint {
+// NewEndpoint creates an Endpoint from a string that contains a user, host and
+// port. Both User and Port are optional (depending on context). The host can
+// be a domain name, IPv4 address or IPv6 address. If it's an IPv6, it must be
+// enclosed in square brackets
+func NewEndpoint(s string) (*Endpoint, error) {
 	endpoint := &Endpoint{
 		Host: s,
 	}
@@ -24,12 +28,20 @@ func NewEndpoint(s string) *Endpoint {
 	}
 
 	host, port, err := net.SplitHostPort(endpoint.Host)
-	if err == nil {
+	if err != nil {
+		// if error results from missing port in address, we ignore the error
+		// since either we'll use a random port assigned by the OS or set a
+		// suitable default directly, e.g. port 22 for SSH. Also worth noting,
+		// the host is set to the rest of the string since no port is provided
+		if !strings.Contains(err.Error(), "missing port in address") {
+			return nil, err
+		}
+	} else {
 		endpoint.Host = host
 		endpoint.Port, _ = strconv.Atoi(port)
 	}
 
-	return endpoint
+	return endpoint, nil
 }
 
 func (endpoint *Endpoint) String() string {
