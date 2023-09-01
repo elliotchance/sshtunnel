@@ -13,17 +13,16 @@ type logger interface {
 }
 
 type SSHTunnel struct {
-	Local                   *Endpoint
-	Server                  *Endpoint
-	Remote                  *Endpoint
-	Config                  *ssh.ClientConfig
-	Log                     logger
-	Conns                   []net.Conn
-	SvrConns                []*ssh.Client
-	MaxConnectionAttempts   int
-	CloseLocalOnDialFailure bool
-	isOpen                  bool
-	close                   chan interface{}
+	Local                 *Endpoint
+	Server                *Endpoint
+	Remote                *Endpoint
+	Config                *ssh.ClientConfig
+	Log                   logger
+	Conns                 []net.Conn
+	SvrConns              []*ssh.Client
+	MaxConnectionAttempts int
+	isOpen                bool
+	close                 chan interface{}
 }
 
 func (tunnel *SSHTunnel) logf(fmt string, args ...interface{}) {
@@ -128,14 +127,12 @@ func (tunnel *SSHTunnel) forward(localConn net.Conn) {
 			if attemptsLeft <= 0 {
 				tunnel.logf("server dial error: %v: exceeded %d attempts", err, tunnel.MaxConnectionAttempts)
 
-				if tunnel.CloseLocalOnDialFailure {
-					if err := localConn.Close(); err != nil {
-						tunnel.logf("failed to close local connection: %v", err)
-						return
-					}
-					tunnel.logf("dial failed, closing local connection: %v", err)
+				if err := localConn.Close(); err != nil {
+					tunnel.logf("failed to close local connection: %v", err)
+					return
 				}
 
+				tunnel.logf("dial failed, closing local connection: %v", err)
 				return
 			}
 			tunnel.logf("server dial error: %v: attempt %d/%d", err, tunnel.MaxConnectionAttempts-attemptsLeft, tunnel.MaxConnectionAttempts)
