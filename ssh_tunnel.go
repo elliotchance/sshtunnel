@@ -1,6 +1,7 @@
 package sshtunnel
 
 import (
+	"errors"
 	"io"
 	"net"
 
@@ -38,11 +39,23 @@ func newConnectionWaiter(listener net.Listener, c chan net.Conn) {
 	c <- conn
 }
 
-func (tunnel *SSHTunnel) Start() error {
-	listener, err := net.Listen("tcp", tunnel.Local.String())
+func (t *SSHTunnel) Listen() (net.Listener, error) {
+	return net.Listen("tcp", t.Local.String())
+}
+
+func (t *SSHTunnel) Start() error {
+	listener, err := t.Listen()
 	if err != nil {
+		t.logf("listen error: %s", err)
 		return err
 	}
+	defer listener.Close()
+
+	return t.Serve(listener)
+}
+
+func (tunnel *SSHTunnel) Serve(listener net.Listener) error {
+
 	tunnel.isOpen = true
 	tunnel.Local.Port = listener.Addr().(*net.TCPAddr).Port
 
@@ -61,7 +74,7 @@ func (tunnel *SSHTunnel) Start() error {
 
 		c := make(chan net.Conn)
 		go newConnectionWaiter(listener, c)
-		tunnel.logf("listening for new connections...")
+		tunnel.logf("listening for new connections on %s:%d...", tunnel.Local.Host, tunnel.Local.Port)
 
 		select {
 		case <-tunnel.close:
@@ -69,7 +82,7 @@ func (tunnel *SSHTunnel) Start() error {
 			tunnel.isOpen = false
 		case conn := <-c:
 			tunnel.Conns = append(tunnel.Conns, conn)
-			tunnel.logf("accepted connection")
+			tunnel.logf("accepted connection from %s", conn.RemoteAddr().String())
 			go tunnel.forward(conn)
 		}
 	}
@@ -79,6 +92,10 @@ func (tunnel *SSHTunnel) Start() error {
 		tunnel.logf("closing the netConn (%d of %d)", i+1, total)
 		err := conn.Close()
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				// no need to report on closed connections
+				continue
+			}
 			tunnel.logf(err.Error())
 		}
 	}
@@ -90,10 +107,7 @@ func (tunnel *SSHTunnel) Start() error {
 			tunnel.logf(err.Error())
 		}
 	}
-	err = listener.Close()
-	if err != nil {
-		return err
-	}
+
 	tunnel.logf("tunnel closed")
 	return nil
 }
@@ -112,8 +126,16 @@ func (tunnel *SSHTunnel) forward(localConn net.Conn) {
 
 			if attemptsLeft <= 0 {
 				tunnel.logf("server dial error: %v: exceeded %d attempts", err, tunnel.MaxConnectionAttempts)
+
+				if err := localConn.Close(); err != nil {
+					tunnel.logf("failed to close local connection: %v", err)
+					return
+				}
+
+				tunnel.logf("dial failed, closing local connection: %v", err)
 				return
 			}
+			tunnel.logf("server dial error: %v: attempt %d/%d", err, tunnel.MaxConnectionAttempts-attemptsLeft, tunnel.MaxConnectionAttempts)
 		} else {
 			break
 		}
@@ -137,13 +159,10 @@ func (tunnel *SSHTunnel) forward(localConn net.Conn) {
 	}
 	go copyConn(localConn, remoteConn)
 	go copyConn(remoteConn, localConn)
-
-	return
 }
 
 func (tunnel *SSHTunnel) Close() {
 	tunnel.close <- struct{}{}
-	return
 }
 
 // NewSSHTunnel creates a new single-use tunnel. Supplying "0" for localport will use a random port.
