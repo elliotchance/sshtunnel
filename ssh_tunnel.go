@@ -147,6 +147,13 @@ func (tunnel *SSHTunnel) forward(localConn net.Conn) {
 	remoteConn, err := serverConn.Dial("tcp", tunnel.Remote.String())
 	if err != nil {
 		tunnel.logf("remote dial error: %s", err)
+
+		if err := serverConn.Close(); err != nil {
+			tunnel.logf("failed to close server connection: %v", err)
+		}
+		if err := localConn.Close(); err != nil {
+			tunnel.logf("failed to close local connection: %v", err)
+		}
 		return
 	}
 	tunnel.Conns = append(tunnel.Conns, remoteConn)
