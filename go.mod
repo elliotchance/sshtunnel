@@ -1,4 +1,4 @@
-module github.com/jamesgdiaz/sshtunnel
+module github.com/elliotchance/sshtunnel
 
 go 1.13
 
