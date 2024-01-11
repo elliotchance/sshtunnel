@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/elliotchance/sshtunnel"
+	"github.com/jamesgdiaz/sshtunnel"
 )
 
 func TestCreateEndpoint(t *testing.T) {
