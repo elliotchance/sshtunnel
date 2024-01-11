@@ -6,7 +6,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-func PrivateKeyFile(file string, pass ...string) ssh.AuthMethod {
+func PrivateKeyFile(file string) ssh.AuthMethod {
 	buffer, err := os.ReadFile(file)
 	if err != nil {
 		return nil
