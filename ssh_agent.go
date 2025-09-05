@@ -9,8 +9,9 @@ import (
 )
 
 func SSHAgent() ssh.AuthMethod {
-	if sshAgent, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK")); err == nil {
-		return ssh.PublicKeysCallback(agent.NewClient(sshAgent).Signers)
+	sshAgent, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK"))
+	if err != nil {
+		panic("connecting to SSH agent: " + err.Error())
 	}
-	return nil
+	return ssh.PublicKeysCallback(agent.NewClient(sshAgent).Signers)
 }
