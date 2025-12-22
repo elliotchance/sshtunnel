@@ -2,8 +2,10 @@ package sshtunnel
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"sync"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -19,7 +21,8 @@ type SSHTunnel struct {
 	Config                *ssh.ClientConfig
 	Log                   logger
 	Conns                 []net.Conn
-	SvrConns              []*ssh.Client
+	SvrConn               *ssh.Client
+	svrConnMutex          sync.Mutex
 	MaxConnectionAttempts int
 	isOpen                bool
 	close                 chan interface{}
@@ -92,17 +95,16 @@ func (tunnel *SSHTunnel) Serve(listener net.Listener) error {
 		tunnel.logf("closing the netConn (%d of %d)", i+1, total)
 		err := conn.Close()
 		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
+			if errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) {
 				// no need to report on closed connections
 				continue
 			}
 			tunnel.logf(err.Error())
 		}
 	}
-	total = len(tunnel.SvrConns)
-	for i, conn := range tunnel.SvrConns {
-		tunnel.logf("closing the serverConn (%d of %d)", i+1, total)
-		err := conn.Close()
+	if tunnel.SvrConn != nil {
+		tunnel.logf("closing the serverConn")
+		err := tunnel.SvrConn.Close()
 		if err != nil {
 			tunnel.logf(err.Error())
 		}
@@ -112,37 +114,54 @@ func (tunnel *SSHTunnel) Serve(listener net.Listener) error {
 	return nil
 }
 
-func (tunnel *SSHTunnel) forward(localConn net.Conn) {
-	var (
-		serverConn   *ssh.Client
-		err          error
-		attemptsLeft int = tunnel.MaxConnectionAttempts
-	)
-
-	for {
-		serverConn, err = ssh.Dial("tcp", tunnel.Server.String(), tunnel.Config)
-		if err != nil {
-			attemptsLeft--
-
-			if attemptsLeft <= 0 {
-				tunnel.logf("server dial error: %v: exceeded %d attempts", err, tunnel.MaxConnectionAttempts)
-
-				if err := localConn.Close(); err != nil {
-					tunnel.logf("failed to close local connection: %v", err)
-					return
-				}
-
-				tunnel.logf("dial failed, closing local connection: %v", err)
-				return
-			}
-			tunnel.logf("server dial error: %v: attempt %d/%d", err, tunnel.MaxConnectionAttempts-attemptsLeft, tunnel.MaxConnectionAttempts)
-		} else {
-			break
+func (tunnel *SSHTunnel) ensureServerConnected() (*ssh.Client, error) {
+	if tunnel.SvrConn == nil {
+		tunnel.svrConnMutex.Lock()
+		defer tunnel.svrConnMutex.Unlock()
+		if tunnel.SvrConn != nil {
+			return tunnel.SvrConn, nil
 		}
+
+		attemptsLeft := tunnel.MaxConnectionAttempts
+		var (
+			serverConn *ssh.Client
+			err        error
+		)
+
+		for {
+			serverConn, err = ssh.Dial("tcp", tunnel.Server.String(), tunnel.Config)
+			if err != nil {
+				attemptsLeft--
+
+				if attemptsLeft <= 0 {
+					tunnel.logf("server dial error: %v: exceeded %d attempts", err, tunnel.MaxConnectionAttempts)
+
+					tunnel.logf("dial failed: %v", err)
+					return nil, fmt.Errorf("failed to close local connection")
+				}
+				tunnel.logf("server dial error: %v: attempt %d/%d", err, tunnel.MaxConnectionAttempts-attemptsLeft, tunnel.MaxConnectionAttempts)
+			} else {
+				break
+			}
+		}
+
+		tunnel.logf("connected to %s\n", tunnel.Server.String())
+		tunnel.SvrConn = serverConn
 	}
 
-	tunnel.logf("connected to %s (1 of 2)\n", tunnel.Server.String())
-	tunnel.SvrConns = append(tunnel.SvrConns, serverConn)
+	return tunnel.SvrConn, nil
+}
+
+func (tunnel *SSHTunnel) forward(localConn net.Conn) {
+	serverConn, err := tunnel.ensureServerConnected()
+
+	if err != nil {
+		tunnel.logf("server dial error: %v, closing local connection", err)
+		if err := localConn.Close(); err != nil {
+			tunnel.logf("failed to close local connection: %w", err)
+		}
+		return
+	}
 
 	remoteConn, err := serverConn.Dial("tcp", tunnel.Remote.String())
 	if err != nil {
@@ -151,14 +170,19 @@ func (tunnel *SSHTunnel) forward(localConn net.Conn) {
 		if err := serverConn.Close(); err != nil {
 			tunnel.logf("failed to close server connection: %v", err)
 		}
+		tunnel.svrConnMutex.Lock()
+		defer tunnel.svrConnMutex.Unlock()
+		tunnel.SvrConn = nil
 		if err := localConn.Close(); err != nil {
 			tunnel.logf("failed to close local connection: %v", err)
 		}
 		return
 	}
 	tunnel.Conns = append(tunnel.Conns, remoteConn)
-	tunnel.logf("connected to %s (2 of 2)\n", tunnel.Remote.String())
+	tunnel.logf("connected to %s\n", tunnel.Remote.String())
 	copyConn := func(writer, reader net.Conn) {
+		defer writer.Close()
+		defer reader.Close()
 		_, err := io.Copy(writer, reader)
 		if err != nil {
 			tunnel.logf("io.Copy error: %s", err)
