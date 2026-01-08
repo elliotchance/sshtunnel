@@ -8,27 +8,18 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-type logger interface {
-	Printf(string, ...interface{})
-}
-
 type SSHTunnel struct {
 	Local                 *Endpoint
 	Server                *Endpoint
 	Remote                *Endpoint
 	Config                *ssh.ClientConfig
 	Log                   logger
+	log                   logger
 	Conns                 []net.Conn
-	SvrConns              []*ssh.Client
+	sshClientManager      sshClientManager
 	MaxConnectionAttempts int
 	isOpen                bool
 	close                 chan interface{}
-}
-
-func (tunnel *SSHTunnel) logf(fmt string, args ...interface{}) {
-	if tunnel.Log != nil {
-		tunnel.Log.Printf(fmt, args...)
-	}
 }
 
 func newConnectionWaiter(listener net.Listener, c chan net.Conn) {
@@ -46,7 +37,7 @@ func (t *SSHTunnel) Listen() (net.Listener, error) {
 func (t *SSHTunnel) Start() error {
 	listener, err := t.Listen()
 	if err != nil {
-		t.logf("listen error: %s", err)
+		t.log.Printf("listen error: %s", err)
 		return err
 	}
 	defer listener.Close()
@@ -54,122 +45,98 @@ func (t *SSHTunnel) Start() error {
 	return t.Serve(listener)
 }
 
-func (tunnel *SSHTunnel) Serve(listener net.Listener) error {
+func (t *SSHTunnel) Serve(listener net.Listener) error {
 
-	tunnel.isOpen = true
-	tunnel.Local.Port = listener.Addr().(*net.TCPAddr).Port
+	t.isOpen = true
+	t.Local.Port = listener.Addr().(*net.TCPAddr).Port
 
 	// Ensure that MaxConnectionAttempts is at least 1. This check is done here
 	// since the library user can set the value at any point before Start() is called,
 	// and this check protects against the case where the programmer set MaxConnectionAttempts
 	// to 0 for some reason.
-	if tunnel.MaxConnectionAttempts <= 0 {
-		tunnel.MaxConnectionAttempts = 1
+	if t.MaxConnectionAttempts <= 0 {
+		t.MaxConnectionAttempts = 1
 	}
 
 	for {
-		if !tunnel.isOpen {
+		if !t.isOpen {
 			break
 		}
 
 		c := make(chan net.Conn)
 		go newConnectionWaiter(listener, c)
-		tunnel.logf("listening for new connections on %s:%d...", tunnel.Local.Host, tunnel.Local.Port)
+		t.log.Printf("listening for new connections on %s:%d...", t.Local.Host, t.Local.Port)
 
 		select {
-		case <-tunnel.close:
-			tunnel.logf("close signal received, closing...")
-			tunnel.isOpen = false
+		case <-t.close:
+			t.log.Printf("close signal received, closing...")
+			t.isOpen = false
 		case conn := <-c:
-			tunnel.Conns = append(tunnel.Conns, conn)
-			tunnel.logf("accepted connection from %s", conn.RemoteAddr().String())
-			go tunnel.forward(conn)
+			t.Conns = append(t.Conns, conn)
+			t.log.Printf("accepted connection from %s", conn.RemoteAddr().String())
+			go t.forward(conn)
 		}
 	}
 	var total int
-	total = len(tunnel.Conns)
-	for i, conn := range tunnel.Conns {
-		tunnel.logf("closing the netConn (%d of %d)", i+1, total)
+	total = len(t.Conns)
+	for i, conn := range t.Conns {
+		t.log.Printf("closing the netConn (%d of %d)", i+1, total)
 		err := conn.Close()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				// no need to report on closed connections
 				continue
 			}
-			tunnel.logf(err.Error())
+			t.log.Printf(err.Error())
 		}
 	}
-	total = len(tunnel.SvrConns)
-	for i, conn := range tunnel.SvrConns {
-		tunnel.logf("closing the serverConn (%d of %d)", i+1, total)
-		err := conn.Close()
-		if err != nil {
-			tunnel.logf(err.Error())
-		}
+	if err := t.sshClientManager.cleanup(); err != nil {
+		t.log.Printf(err.Error())
 	}
 
-	tunnel.logf("tunnel closed")
+	t.log.Printf("tunnel closed")
 	return nil
 }
 
-func (tunnel *SSHTunnel) forward(localConn net.Conn) {
-	var (
-		serverConn   *ssh.Client
-		err          error
-		attemptsLeft int = tunnel.MaxConnectionAttempts
-	)
-
-	for {
-		serverConn, err = ssh.Dial("tcp", tunnel.Server.String(), tunnel.Config)
-		if err != nil {
-			attemptsLeft--
-
-			if attemptsLeft <= 0 {
-				tunnel.logf("server dial error: %v: exceeded %d attempts", err, tunnel.MaxConnectionAttempts)
-
-				if err := localConn.Close(); err != nil {
-					tunnel.logf("failed to close local connection: %v", err)
-					return
-				}
-
-				tunnel.logf("dial failed, closing local connection: %v", err)
-				return
-			}
-			tunnel.logf("server dial error: %v: attempt %d/%d", err, tunnel.MaxConnectionAttempts-attemptsLeft, tunnel.MaxConnectionAttempts)
-		} else {
-			break
-		}
-	}
-
-	tunnel.logf("connected to %s (1 of 2)\n", tunnel.Server.String())
-	tunnel.SvrConns = append(tunnel.SvrConns, serverConn)
-
-	remoteConn, err := serverConn.Dial("tcp", tunnel.Remote.String())
+func (t *SSHTunnel) forward(localConn net.Conn) {
+	serverConn, err := t.sshClientManager.ensureConnection()
 	if err != nil {
-		tunnel.logf("remote dial error: %s", err)
-
-		if err := serverConn.Close(); err != nil {
-			tunnel.logf("failed to close server connection: %v", err)
-		}
+		t.log.Printf("dial failed, closing local connection: %v", err)
 		if err := localConn.Close(); err != nil {
-			tunnel.logf("failed to close local connection: %v", err)
+			t.log.Printf("failed to close local connection: %v", err)
+			return
 		}
 		return
 	}
-	tunnel.Conns = append(tunnel.Conns, remoteConn)
-	tunnel.logf("connected to %s (2 of 2)\n", tunnel.Remote.String())
+
+	t.log.Printf("connected to %s (1 of 2)\n", t.Server.String())
+
+	remoteConn, err := serverConn.Dial("tcp", t.Remote.String())
+	if err != nil {
+		t.log.Printf("remote dial error: %s", err)
+
+		if err := serverConn.Close(); err != nil {
+			t.log.Printf("failed to close server connection: %v", err)
+		}
+		if err := localConn.Close(); err != nil {
+			t.log.Printf("failed to close local connection: %v", err)
+		}
+		return
+	}
+	t.Conns = append(t.Conns, remoteConn)
+	t.log.Printf("connected to %s (2 of 2)\n", t.Remote.String())
 	copyConn := func(writer, reader net.Conn) {
 		_, err := io.Copy(writer, reader)
 		if err != nil {
-			tunnel.logf("io.Copy error: %s", err)
+			t.log.Printf("io.Copy error: %s", err)
 		}
 	}
 	go copyConn(localConn, remoteConn)
 	go copyConn(remoteConn, localConn)
 }
 
-func (tunnel *SSHTunnel) Close() {
-	tunnel.close <- struct{}{}
+func (t *SSHTunnel) Close() {
+	t.close <- struct{}{}
 }
 
 // NewSSHTunnel creates a new single-use tunnel. Supplying "0" for localport will use a random port.
@@ -192,6 +159,7 @@ func NewSSHTunnel(tunnel string, auth ssh.AuthMethod, destination string, localp
 	if err != nil {
 		return nil, err
 	}
+
 	sshTunnel := &SSHTunnel{
 		Config: &ssh.ClientConfig{
 			User: server.User,
@@ -206,6 +174,17 @@ func NewSSHTunnel(tunnel string, auth ssh.AuthMethod, destination string, localp
 		Remote: remoteEndpoint,
 		close:  make(chan interface{}),
 	}
+
+	lw := &logWrapper{
+		logProvider: func() logger { return sshTunnel.Log },
+	}
+	sshTunnel.log = lw
+
+	sshTunnel.sshClientManager = newMultipleSSHClientsManager(
+		func() *Endpoint { return sshTunnel.Server },
+		func() *ssh.ClientConfig { return sshTunnel.Config },
+		lw,
+	)
 
 	return sshTunnel, nil
 }
